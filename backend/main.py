@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 from data.note_storage import NotesStorage
+from data.flashcard_storage import FlashcardStorage
 from backend.qa_engine import QAEngine
 from backend.question_generator import QuestionGenerator
 from backend.answer_evaluator import AnswerEvaluator
@@ -22,6 +23,7 @@ app.add_middleware(
 
 # Initialize components
 storage = NotesStorage()
+flashcard_storage = FlashcardStorage()
 qa_engine = QAEngine()
 question_generator = QuestionGenerator()
 answer_evaluator = AnswerEvaluator()
@@ -45,9 +47,21 @@ class FlashcardRequest(BaseModel):
     subject: str
     num_flashcards: int
 
+class SaveFlashcardRequest(BaseModel):
+    subject: str
+    question: str
+    answer: str
+
 class NoteResponse(BaseModel):
     subject: str
     file_name: str
+    created_at: str
+
+class FlashcardResponse(BaseModel):
+    id: str
+    subject: str
+    question: str
+    answer: str
     created_at: str
 
 # Routes
@@ -105,7 +119,51 @@ async def evaluate_answer(request: AnswerEvaluationRequest):
     result = answer_evaluator.evaluate_answer(request.question, request.user_answer, request.subject)
     return result
 
-@app.post("/flashcards", response_model=List[dict])
+@app.post("/flashcards", response_model=List[FlashcardResponse])
 async def generate_flashcards(request: FlashcardRequest):
-    flashcards = flashcard_generator.generate_flashcards(request.subject, request.num_flashcards)
-    return flashcards
+    try:
+        flashcards = flashcard_generator.generate_flashcards(request.subject, request.num_flashcards)
+        saved_flashcards = flashcard_storage.save_flashcards(request.subject, flashcards)
+        return saved_flashcards
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate/save flashcards: {str(e)}")
+
+@app.post("/flashcards/save", response_model=FlashcardResponse)
+async def save_flashcard(request: SaveFlashcardRequest):
+    try:
+        flashcard = [{"question": request.question, "answer": request.answer}]
+        saved_flashcards = flashcard_storage.save_flashcards(request.subject, flashcard)
+        if not saved_flashcards:
+            raise HTTPException(status_code=500, detail="Failed to save flashcard")
+        return saved_flashcards[0]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save flashcard: {str(e)}")
+
+@app.get("/flashcards/{subject}", response_model=List[FlashcardResponse])
+async def get_flashcards(subject: str):
+    try:
+        flashcards = flashcard_storage.get_flashcards(subject)
+        return flashcards
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve flashcards: {str(e)}")
+
+@app.delete("/flashcard/{subject}/{flashcard_id}", response_model=dict)
+async def delete_flashcard(subject: str, flashcard_id: str):
+    try:
+        success = flashcard_storage.delete_flashcard(subject, flashcard_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Flashcard {flashcard_id} not found for subject {subject}")
+        return {"message": "Flashcard deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete flashcard: {str(e)}")
+
+@app.delete("/subject/{subject}", response_model=dict)
+async def delete_subject(subject: str):
+    try:
+        notes_success = storage.delete_subject(subject)
+        flashcards_success = flashcard_storage.delete_subject(subject)
+        if not (notes_success and flashcards_success):
+            raise HTTPException(status_code=500, detail=f"Failed to fully delete subject {subject}")
+        return {"message": f"Subject {subject} and all associated notes and flashcards deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete subject: {str(e)}")

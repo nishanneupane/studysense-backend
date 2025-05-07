@@ -1,80 +1,88 @@
 import os
 import uuid
 from datetime import datetime
-from backend.models import NoteSection
+from typing import List
 import chromadb
 from sentence_transformers import SentenceTransformer
-from docx import Document
-from PyPDF2 import PdfReader
+from backend.models import Note
+from services.text_extract import extract_text_from_file
 
 class NotesStorage:
     def __init__(self, db_path="./chroma_db"):
         self.db_path = db_path
-        os.makedirs(db_path, exist_ok=True)
         self.client = chromadb.PersistentClient(path=db_path)
-        self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
     def _get_collection(self, subject: str):
         """
-        Get or create a Chroma DB collection for the subject.
+        Get or create a Chroma DB collection for notes in the subject.
         """
-        collection_name = subject.lower().replace(" ", "_")
-        return self.client.get_or_create_collection(name=collection_name)
+        collection_name = f"notes_{subject.lower().replace(' ', '_')}"
+        try:
+            return self.client.get_or_create_collection(name=collection_name)
+        except Exception as e:
+            raise Exception(f"Failed to access collection for {subject}: {str(e)}")
 
-    def save_note_from_file(self, file_path: str, subject: str, file_name: str = "Unknown") -> NoteSection:
+    def save_note_from_file(self, file_path: str, subject: str, file_name: str) -> Note:
         """
-        Extract text from uploaded file (txt, docx, pdf) and save to subject-specific Chroma DB collection.
+        Save a note extracted from a file to the Chroma DB.
         """
-        # Extract text based on file extension
-        content = ""
-        if file_path.endswith(".txt"):
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-        elif file_path.endswith(".docx"):
-            doc = Document(file_path)
-            content = "\n".join([para.text for para in doc.paragraphs])
-        elif file_path.endswith(".pdf"):
-            reader = PdfReader(file_path)
-            content = "\n".join([page.extract_text() or "" for page in reader.pages])
-        else:
-            raise ValueError("Unsupported file format. Use txt, docx, or pdf.")
+        try:
+            text = extract_text_from_file(file_path)
+            embedding = self.embedding_model.encode(text).tolist()
+            note_id = str(uuid.uuid4())
+            created_at = datetime.utcnow()
+            collection = self._get_collection(subject)
+            collection.add(
+                documents=[text],
+                embeddings=[embedding],
+                metadatas=[{"subject": subject, "file_name": file_name, "created_at": created_at.isoformat()}],
+                ids=[note_id]
+            )
+            return Note(id=note_id, subject=subject, content=text, created_at=created_at)
+        except Exception as e:
+            raise Exception(f"Failed to save note from {file_name}: {str(e)}")
 
-        # Create NoteSection
-        note = NoteSection(subject=subject, content=content.strip())
+    def load_notes_by_subject(self, subject: str) -> List[Note]:
+        """
+        Load all notes for a given subject from Chroma DB.
+        """
+        try:
+            collection = self._get_collection(subject)
+            results = collection.get(include=["documents", "metadatas"])
+            notes = []
+            for id, doc, meta in zip(results["ids"], results["documents"], results["metadatas"]):
+                notes.append(
+                    Note(
+                        id=id,
+                        subject=meta["subject"],
+                        content=doc,
+                        created_at=datetime.fromisoformat(meta["created_at"])
+                    )
+                )
+            return notes
+        except Exception as e:
+            raise Exception(f"Failed to load notes for {subject}: {str(e)}")
 
-        # Generate embedding and save to subject-specific collection
-        collection = self._get_collection(subject)
-        note_id = str(uuid.uuid4())
-        embedding = self.embedding_model.encode(note.content).tolist()
-        collection.add(
-            documents=[note.content],
-            metadatas=[{
-                "subject": note.subject,
-                "created_at": note.created_at.isoformat(),
-                "file_name": file_name
-            }],
-            ids=[note_id]
-        )
-        return note
+    def list_subjects(self) -> List[str]:
+        """
+        List all unique subjects in the Chroma DB.
+        """
+        try:
+            collections = self.client.list_collections()
+            subjects = [c.name.replace("notes_", "").replace("_", " ").title() for c in collections]
+            return sorted(subjects)
+        except Exception as e:
+            raise Exception(f"Failed to list subjects: {str(e)}")
 
-    def load_notes_by_subject(self, subject: str) -> list[NoteSection]:
+    def delete_subject(self, subject: str) -> bool:
         """
-        Load notes from the subject-specific Chroma DB collection.
+        Delete the entire subject collection from Chroma DB.
         """
-        collection = self._get_collection(subject)
-        results = collection.get()
-        notes = []
-        for doc, meta in zip(results["documents"], results["metadatas"]):
-            notes.append(NoteSection(
-                subject=meta["subject"],
-                content=doc,
-                created_at=datetime.fromisoformat(meta["created_at"])
-            ))
-        return notes
-
-    def list_subjects(self) -> list[str]:
-        """
-        List all subjects (collections) in Chroma DB.
-        """
-        collections = self.client.list_collections()
-        return sorted([coll.name.replace("_", " ").title() for coll in collections])
+        try:
+            collection_name = f"notes_{subject.lower().replace(' ', '_')}"
+            self.client.delete_collection(name=collection_name)
+            return True
+        except Exception:
+            # Collection may not exist
+            return True

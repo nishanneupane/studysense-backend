@@ -26,7 +26,11 @@ class QAEngine:
 {context}
 
 Answer the question: {question}
-Provide a concise and accurate answer based only on the notes."""
+Provide a concise and accurate answer based only on the notes and if the context is not enough add your own knowledge as well.
+And while evaluating dont say 'users' answers. speak like you are talking to the user directly.
+treat yourself like a professor and they are your student as well as friends.
+The answer should be shown with proper spacing and if required proper code snippets. 
+"""
         
         # Query Ollama
         response = query_ollama(prompt, temperature=0.5, max_tokens=200)
