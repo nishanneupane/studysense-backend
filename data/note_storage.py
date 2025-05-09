@@ -13,21 +13,69 @@ class NotesStorage:
         self.client = chromadb.PersistentClient(path=db_path)
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
+    def _normalize_subject(self, subject: str) -> str:
+        """
+        Normalize subject name to a consistent format for collection names.
+        """
+        return subject.lower().replace(' ', '_')
+
     def _get_collection(self, subject: str):
         """
         Get or create a Chroma DB collection for notes in the subject.
+        Ensures no duplicate collections are created for equivalent subject names.
         """
-        collection_name = f"notes_{subject.lower().replace(' ', '_')}"
+        normalized_subject = self._normalize_subject(subject)
+        collection_name = f"notes_{normalized_subject}"
+        
+        # Check if a collection with the same normalized name already exists
+        existing_collections = self.client.list_collections()
+        for collection in existing_collections:
+            if collection.name == collection_name:
+                return collection
+        
         try:
             return self.client.get_or_create_collection(name=collection_name)
         except Exception as e:
             raise Exception(f"Failed to access collection for {subject}: {str(e)}")
 
+    def create_subject(self, subject: str) -> None:
+        """
+        Create a new subject by initializing an empty collection in Chroma DB.
+        Raises ValueError if the subject already exists.
+        """
+        normalized_subject = self._normalize_subject(subject)
+        collection_name = f"notes_{normalized_subject}"
+        
+        # Check for existing collections to prevent duplicates
+        existing_collections = self.client.list_collections()
+        for collection in existing_collections:
+            existing_subject = collection.name.replace("notes_", "")
+            if existing_subject == normalized_subject:
+                raise ValueError(f"Subject '{subject}' already exists as '{existing_subject.replace('_', ' ').title()}'")
+        
+        try:
+            # Create an empty collection for the subject
+            self.client.create_collection(name=collection_name)
+        except Exception as e:
+            raise Exception(f"Failed to create subject '{subject}': {str(e)}")
+
     def save_note_from_file(self, file_path: str, subject: str, file_name: str) -> Note:
         """
         Save a note extracted from a file to the Chroma DB.
+        Validates that the subject doesn't conflict with existing subjects.
         """
         try:
+            # Normalize subject to check for conflicts
+            normalized_subject = self._normalize_subject(subject)
+            existing_collections = self.client.list_collections()
+            for collection in existing_collections:
+                existing_subject = collection.name.replace("notes_", "")
+                if existing_subject == normalized_subject:
+                    # Allow saving if the subject matches exactly after normalization
+                    if collection.name == f"notes_{normalized_subject}":
+                        break
+                    raise Exception(f"Subject '{subject}' conflicts with existing subject '{existing_subject.replace('_', ' ').title()}'")
+
             text = extract_text_from_file(file_path)
             embedding = self.embedding_model.encode(text).tolist()
             note_id = str(uuid.uuid4())
@@ -70,7 +118,7 @@ class NotesStorage:
         """
         try:
             collections = self.client.list_collections()
-            subjects = [c.name.replace("notes_", "").replace("_", " ").title() for c in collections]
+            subjects = list(set(c.name.replace("notes_", "").replace("_", " ").title() for c in collections))
             return sorted(subjects)
         except Exception as e:
             raise Exception(f"Failed to list subjects: {str(e)}")
@@ -80,7 +128,7 @@ class NotesStorage:
         Delete the entire subject collection from Chroma DB.
         """
         try:
-            collection_name = f"notes_{subject.lower().replace(' ', '_')}"
+            collection_name = f"notes_{self._normalize_subject(subject)}"
             self.client.delete_collection(name=collection_name)
             return True
         except Exception:

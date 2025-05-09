@@ -64,10 +64,23 @@ class FlashcardResponse(BaseModel):
     answer: str
     created_at: str
 
+class SubjectRequest(BaseModel):
+    subject: str
+
 # Routes
 @app.get("/subjects", response_model=List[str])
 async def get_subjects():
     return storage.list_subjects()
+
+@app.post("/subjects", response_model=dict)
+async def create_subject(request: SubjectRequest):
+    try:
+        storage.create_subject(request.subject)
+        return {"message": f"Subject '{request.subject}' created successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create subject: {str(e)}")
 
 @app.get("/notes/{subject}", response_model=List[NoteResponse])
 async def get_notes(subject: str):

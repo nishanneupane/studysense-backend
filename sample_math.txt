@@ -1,0 +1,1 @@
+The Pythagorean theorem states that a^2 + b^2 = c^2 for a right triangle. It is used to calculate the length of sides in right-angled triangles.
